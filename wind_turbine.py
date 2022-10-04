@@ -57,23 +57,43 @@ class Wind_turbine:
 		'''
 		self._heading = -self.__heading_sensor_bias if initial_estimated_heading is None \
 			else initial_estimated_heading - self.__heading_sensor_bias
+		self.initial_heading = initial_estimated_heading if initial_estimated_heading is not None else 0
 		self._has_inertia = False if has_inertia is None else has_inertia
 
 	def __power_output(self, wind_speed:float, wind_heading:float) -> float :
 		'''
 		The output power of the wind turbine in MW
+		TODO: make the reward function work with inertia
 		'''
 		# Linear interpolation of the given power curve to get the power output (output in MW)
 		facing_wind_power_output = np.interp(wind_speed, self.__power_curve[0], self.__power_curve[1])/1e3
 		wraped_wt_heading = wrap_to_m180_p180(self._heading)
 		wraped_wind_heading = wrap_to_m180_p180(wind_heading)
 		rel_wind_angle = wraped_wind_heading - wraped_wt_heading
+		if np.abs(rel_wind_angle) > 180:
+			rel_wind_angle = 360 - np.abs(rel_wind_angle)
+			#print("wind angle", wraped_wind_heading)
+			#print("wt angle", wraped_wt_heading)
 		# Get power output without filtering
 		if np.abs(rel_wind_angle) > self.__yaw_cut_off:
 			power_output = 0
 		else:
 			power_output = np.max([np.cos(rel_wind_angle * np.pi/180) * facing_wind_power_output, 0])
+		power_output_max = facing_wind_power_output
+		rel_wind_angle_no_control = wraped_wind_heading - wrap_to_m180_p180(self.initial_heading)
+		if np.abs(rel_wind_angle_no_control) > 180:
+			rel_wind_angle_no_control = 360 - np.abs(rel_wind_angle_no_control)
+		if np.abs(rel_wind_angle_no_control) > self.__yaw_cut_off:
+			power_output_no_control = 0
+		else:
+			power_output_no_control = np.max([np.cos(rel_wind_angle_no_control * np.pi/180) * facing_wind_power_output, 0])
 
+		if power_output_no_control > power_output and False:
+			print("Power output without control is higher than with control")
+			print("Power output without control : ", power_output_no_control)
+			print("Power output with control : ", power_output)
+			print("Relative wind angle without control : ", rel_wind_angle_no_control)
+			print("Relative wind angle with control : ", rel_wind_angle)
 		# If filtering is enabled, process to low-pass filter
 		if self._has_inertia:
 			# Initialize the filter
@@ -90,7 +110,7 @@ class Wind_turbine:
 				self.__power_hist_filt.append(power_hist_filt[-1])
 			return self.__power_hist_filt[-1]
 		else:
-			return power_output
+			return (power_output, power_output_max, power_output_no_control)
 
 	def __rotate(self, direction):
 		if direction == -1 :
@@ -119,10 +139,11 @@ class Wind_turbine:
 			power_output 	- [MW]
 		'''
 		self.__rotate(action-1)
-		power_output = self.__power_output(wind_speed, wind_heading)
+		power_output, power_output_max, power_output_no_control = self.__power_output(wind_speed, wind_heading)
+		# TODO: add the cost for power output max as well
 		if self.__control_on:
 			power_output -= self.__yaw_control_cost
-		return power_output
+		return power_output, power_output_max, power_output_no_control
 
 	@property
 	def heading(self): 	# corresponds to the estimated heading
@@ -210,6 +231,9 @@ class Wind:
 					steps = 1
 		else:
 			print('Wind model not found in class ', str(self.__class__))
+
+	def get_time(self):
+		return self.__time
 
 	def __ou(self):
 		'''
